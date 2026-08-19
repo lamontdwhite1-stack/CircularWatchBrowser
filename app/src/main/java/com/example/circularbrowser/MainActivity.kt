@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.wear.compose.material.*
+import kotlinx.coroutines.delay
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -43,7 +44,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            CircularBrowserApp()
+            MaterialTheme {
+                CircularBrowserApp()
+            }
         }
     }
 }
@@ -59,9 +62,15 @@ fun CircularBrowserApp() {
     
     var showSearchDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
-    var currentUrl by remember { mutableStateOf("https://www.youtube.com") }
+    var currentUrl by remember { mutableStateOf("https://www.google.com") }
 
-    // Hardware back button: Exits fullscreen video first, then navigates web history
+    // Safe focus request after layout stabilization
+    LaunchedEffect(Unit) {
+        delay(300)
+        runCatching { focusRequester.requestFocus() }
+    }
+
+    // Hardware back navigation
     BackHandler(enabled = customVideoView != null || webViewRef?.canGoBack() == true) {
         if (customVideoView != null) {
             customViewCallback?.onCustomViewHidden()
@@ -69,10 +78,6 @@ fun CircularBrowserApp() {
         } else {
             webViewRef?.goBack()
         }
-    }
-
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
     }
 
     Scaffold(
@@ -89,12 +94,11 @@ fun CircularBrowserApp() {
                     true
                 }
         ) {
-            // Standard Web View
+            // Main Web Renderer
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
                     WebView(context).apply {
-                        webViewRef = this
                         settings.apply {
                             javaScriptEnabled = true
                             domStorageEnabled = true
@@ -102,6 +106,11 @@ fun CircularBrowserApp() {
                             useWideViewPort = true
                             mediaPlaybackRequiresUserGesture = false
                             cacheMode = WebSettings.LOAD_DEFAULT
+
+                            // Pinch-to-Zoom
+                            setSupportZoom(true)
+                            builtInZoomControls = true
+                            displayZoomControls = false
                         }
 
                         isHorizontalScrollBarEnabled = false
@@ -127,6 +136,7 @@ fun CircularBrowserApp() {
                         }
 
                         loadUrl(currentUrl)
+                        webViewRef = this
                     }
                 },
                 update = { webView ->
@@ -136,7 +146,7 @@ fun CircularBrowserApp() {
                 }
             )
 
-            // Native Fullscreen Video Overlay
+            // Fullscreen Video Player View
             customVideoView?.let { videoView ->
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
@@ -152,7 +162,7 @@ fun CircularBrowserApp() {
                 )
             }
 
-            // Top Search Bar (Hidden during video playback)
+            // Top Search Bar
             if (customVideoView == null) {
                 CompactChip(
                     onClick = { showSearchDialog = true },
@@ -171,7 +181,7 @@ fun CircularBrowserApp() {
                 )
             }
 
-            // Search Dialog Modal
+            // Search Modal
             if (showSearchDialog) {
                 Box(
                     modifier = Modifier
@@ -233,7 +243,7 @@ fun CircularBrowserApp() {
                                         showSearchDialog = false
                                     }
                                 },
-                                colors = ButtonDefaults.primaryButtonColors()
+                                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF007AFF))
                             ) {
                                 Text("Go", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
@@ -266,26 +276,22 @@ private fun injectCircularStyles(view: WebView?) {
                 meta.name = 'viewport';
                 document.head.appendChild(meta);
             }
-            meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+            meta.content = 'width=device-width, initial-scale=1.0, minimum-scale=0.5, maximum-scale=4.0, user-scalable=yes';
 
             var style = document.createElement('style');
             style.innerHTML = `
                 * {
-                    max-width: 100vw !important;
                     box-sizing: border-box !important;
                 }
                 body {
                     padding: 20% 12% 20% 12% !important;
                     margin: 0 !important;
                     word-wrap: break-word !important;
-                    overflow-x: hidden !important;
                     background-color: #000 !important;
                 }
                 header, nav, [class*="fixed"], [class*="sticky"], [id*="header"], [id*="cookie"] {
                     position: static !important;
                 }
-                
-                /* Adaptive Smart Video Reflow */
                 video {
                     width: 100% !important;
                     height: auto !important;
@@ -296,8 +302,6 @@ private fun injectCircularStyles(view: WebView?) {
                     border-radius: 50% !important;
                     transition: transform 0.25s ease-out !important;
                 }
-
-                /* Container optimization for embedded web players (YouTube, Vimeo) */
                 .html5-video-player, .video-stream, .player-container {
                     background: transparent !important;
                     border-radius: 50% !important;
@@ -306,7 +310,6 @@ private fun injectCircularStyles(view: WebView?) {
             `;
             document.head.appendChild(style);
 
-            // Double-tap video to toggle between Smart Zoom (1.22x) and Exact Fit (1.0x)
             var lastTap = 0;
             document.addEventListener('touchend', function(e) {
                 var currentTime = new Date().getTime();
@@ -320,7 +323,6 @@ private fun injectCircularStyles(view: WebView?) {
                             v.style.transform = 'scale(1)';
                         }
                     });
-                    e.preventDefault();
                 }
                 lastTap = currentTime;
             });
