@@ -1,7 +1,10 @@
 package com.example.circularbrowser
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.os.Bundle
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
@@ -10,10 +13,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -21,13 +22,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -36,217 +33,210 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.wear.compose.material.*
-import kotlinx.coroutines.delay
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 class MainActivity : ComponentActivity() {
+
+    private var activeWebView: WebView? = null
+    private var customVideoView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                CircularBrowserApp()
+                CircularBrowserScreen(
+                    onWebViewCreated = { webView ->
+                        activeWebView = webView
+                    },
+                    onShowCustomView = { view, callback ->
+                        customVideoView = view
+                        customViewCallback = callback
+                    },
+                    onHideCustomView = {
+                        customVideoView = null
+                        customViewCallback = null
+                    }
+                )
             }
+        }
+    }
+
+    // Hardware Rotating Bezel Controller (Crash-proof native implementation)
+    override fun onGenericMotionEvent(event: MotionEvent?): Boolean {
+        if (event != null && event.action == MotionEvent.ACTION_SCROLL &&
+            event.isFromSource(InputDevice.SOURCE_ROTARY_ENCODER)
+        ) {
+            val delta = -event.getAxisValue(MotionEvent.AXIS_SCROLL) * 160f
+            activeWebView?.scrollBy(0, delta.toInt())
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    // Hardware Back Button Controller
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (customVideoView != null) {
+            customViewCallback?.onCustomViewHidden()
+            customVideoView = null
+        } else if (activeWebView?.canGoBack() == true) {
+            activeWebView?.goBack()
+        } else {
+            super.onBackPressed()
         }
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun CircularBrowserApp() {
-    val focusRequester = remember { FocusRequester() }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    var customVideoView by remember { mutableStateOf<View?>(null) }
-    var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
-    
+fun CircularBrowserScreen(
+    onWebViewCreated: (WebView) -> Unit,
+    onShowCustomView: (View, WebChromeClient.CustomViewCallback) -> Unit,
+    onHideCustomView: () -> Unit
+) {
     var showSearchDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
-    var currentUrl by remember { mutableStateOf("https://www.google.com") }
+    var targetUrl by remember { mutableStateOf("https://www.google.com") }
 
-    // Safe focus request after layout stabilization
-    LaunchedEffect(Unit) {
-        delay(300)
-        runCatching { focusRequester.requestFocus() }
-    }
-
-    // Hardware back navigation
-    BackHandler(enabled = customVideoView != null || webViewRef?.canGoBack() == true) {
-        if (customVideoView != null) {
-            customViewCallback?.onCustomViewHidden()
-            customVideoView = null
-        } else {
-            webViewRef?.goBack()
-        }
-    }
-
-    Scaffold(
-        timeText = { if (customVideoView == null) TimeText() }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
     ) {
-        Box(
+        // Native Web Renderer
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { context ->
+                WebView(context).apply {
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        loadWithOverviewMode = true
+                        useWideViewPort = true
+                        mediaPlaybackRequiresUserGesture = false
+                        cacheMode = WebSettings.LOAD_DEFAULT
+
+                        // Multi-touch Pinch to Zoom
+                        setSupportZoom(true)
+                        builtInZoomControls = true
+                        displayZoomControls = false
+                    }
+
+                    isHorizontalScrollBarEnabled = false
+                    isVerticalScrollBarEnabled = false
+
+                    webViewClient = object : WebViewClient() {
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            injectCircularStyles(view)
+                        }
+                    }
+
+                    webChromeClient = object : WebChromeClient() {
+                        override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                            if (view != null && callback != null) {
+                                onShowCustomView(view, callback)
+                            }
+                        }
+
+                        override fun onHideCustomView() {
+                            onHideCustomView()
+                        }
+                    }
+
+                    loadUrl(targetUrl)
+                    onWebViewCreated(this)
+                }
+            }
+        )
+
+        // Top Floating Search Button
+        CompactChip(
+            onClick = { showSearchDialog = true },
+            label = {
+                Text(
+                    text = "🔍 Search",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            },
+            colors = ChipDefaults.chipColors(backgroundColor = Color(0xDD202020)),
             modifier = Modifier
-                .fillMaxSize()
-                .focusRequester(focusRequester)
-                .focusable()
-                .onRotaryScrollEvent { event ->
-                    val scrollAmount = (event.verticalScrollPixels * 1.5).toInt()
-                    webViewRef?.scrollBy(0, scrollAmount)
-                    true
-                }
-        ) {
-            // Main Web Renderer
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { context ->
-                    WebView(context).apply {
-                        settings.apply {
-                            javaScriptEnabled = true
-                            domStorageEnabled = true
-                            loadWithOverviewMode = true
-                            useWideViewPort = true
-                            mediaPlaybackRequiresUserGesture = false
-                            cacheMode = WebSettings.LOAD_DEFAULT
+                .align(Alignment.TopCenter)
+                .padding(top = 18.dp)
+        )
 
-                            // Pinch-to-Zoom
-                            setSupportZoom(true)
-                            builtInZoomControls = true
-                            displayZoomControls = false
-                        }
-
-                        isHorizontalScrollBarEnabled = false
-                        isVerticalScrollBarEnabled = false
-
-                        webViewClient = object : WebViewClient() {
-                            override fun onPageFinished(view: WebView?, url: String?) {
-                                super.onPageFinished(view, url)
-                                injectCircularStyles(view)
-                            }
-                        }
-
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                                customVideoView = view
-                                customViewCallback = callback
-                            }
-
-                            override fun onHideCustomView() {
-                                customVideoView = null
-                                customViewCallback = null
-                            }
-                        }
-
-                        loadUrl(currentUrl)
-                        webViewRef = this
-                    }
-                },
-                update = { webView ->
-                    if (webView.url != currentUrl) {
-                        webView.loadUrl(currentUrl)
-                    }
-                }
-            )
-
-            // Fullscreen Video Player View
-            customVideoView?.let { videoView ->
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = {
-                        FrameLayout(it).apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                            addView(videoView)
-                        }
-                    }
-                )
-            }
-
-            // Top Search Bar
-            if (customVideoView == null) {
-                CompactChip(
-                    onClick = { showSearchDialog = true },
-                    label = {
-                        Text(
-                            text = "🔍 Search / URL",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    },
-                    colors = ChipDefaults.chipColors(backgroundColor = Color(0xCC1E1E1E)),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 22.dp)
-                )
-            }
-
-            // Search Modal
-            if (showSearchDialog) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.94f))
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
+        // Search Modal Overlay
+        if (showSearchDialog) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.95f))
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                    Text(
+                        text = "Enter Search or URL",
+                        color = Color.LightGray,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(0.90f)
+                            .background(Color(0xFF2C2C2E), RoundedCornerShape(18.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Text("Enter Search or URL", color = Color.LightGray, fontSize = 12.sp)
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(0.88f)
-                                .background(Color(0xFF2C2C2E), RoundedCornerShape(20.dp))
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            BasicTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                singleLine = true,
-                                textStyle = TextStyle(
-                                    color = Color.White,
-                                    fontSize = 13.sp,
-                                    textAlign = TextAlign.Center
-                                ),
-                                cursorBrush = SolidColor(Color.Cyan),
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                keyboardActions = KeyboardActions(
-                                    onSearch = {
-                                        if (searchQuery.isNotBlank()) {
-                                            currentUrl = resolveTargetUrl(searchQuery)
-                                            showSearchDialog = false
-                                        }
-                                    }
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CompactButton(
-                                onClick = { showSearchDialog = false },
-                                colors = ButtonDefaults.secondaryButtonColors()
-                            ) {
-                                Text("✕", color = Color.White, fontSize = 12.sp)
-                            }
-                            CompactButton(
-                                onClick = {
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            textStyle = TextStyle(
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            ),
+                            cursorBrush = SolidColor(Color.Cyan),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(
+                                onSearch = {
                                     if (searchQuery.isNotBlank()) {
-                                        currentUrl = resolveTargetUrl(searchQuery)
+                                        targetUrl = resolveTargetUrl(searchQuery)
                                         showSearchDialog = false
                                     }
-                                },
-                                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF007AFF))
-                            ) {
-                                Text("Go", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
+                                }
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        CompactButton(
+                            onClick = { showSearchDialog = false },
+                            colors = ButtonDefaults.secondaryButtonColors()
+                        ) {
+                            Text("✕", color = Color.White, fontSize = 12.sp)
+                        }
+                        CompactButton(
+                            onClick = {
+                                if (searchQuery.isNotBlank()) {
+                                    targetUrl = resolveTargetUrl(searchQuery)
+                                    showSearchDialog = false
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF007AFF))
+                        ) {
+                            Text("Go", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -284,7 +274,7 @@ private fun injectCircularStyles(view: WebView?) {
                     box-sizing: border-box !important;
                 }
                 body {
-                    padding: 20% 12% 20% 12% !important;
+                    padding: 22% 12% 22% 12% !important;
                     margin: 0 !important;
                     word-wrap: break-word !important;
                     background-color: #000 !important;
